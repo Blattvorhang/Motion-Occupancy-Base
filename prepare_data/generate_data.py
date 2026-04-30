@@ -23,7 +23,7 @@ class ProcessDataBase:
         self.ROLLOUT = config.ROLLOUT
         self.PAST_KF = config.PAST_KF
         self.FUTURE_KF = config.FUTURE_KF
-        self.AMASS_DIR = config.AMASS_DIR
+        self.DATASET_DIR = config.DATASET_DIR
         self.MALE_BM_PATH = config.MALE_BM_PATH
         self.FEMALE_BM_PATH = config.FEMALE_BM_PATH
 
@@ -45,7 +45,7 @@ class ProcessDataBase:
         """
         if data_path.endswith('.pkl'):
             data = pickle.load(open(data_path, 'rb')) # CIRCLE
-        else:
+        elif data_path.endswith('.npz'):
             data = np.load(data_path)
         if 'trans' not in data:
             return None
@@ -149,7 +149,7 @@ class ProcessDataBase:
         return j_6d, j_ego, j_abs, traj, fdir
     
     def get_data(self, path):
-        data_path = os.path.join(self.AMASS_DIR, path + '.pkl')
+        data_path = os.path.join(self.DATASET_DIR, path + '.npz')
         smpl = self.process_smpl(data_path)
         if not smpl:
             return
@@ -177,7 +177,7 @@ class ProcessDataGenerate(ProcessDataBase):
 
 
 if __name__ == '__main__':
-    config = OmegaConf.load("process_data_config.yml")
+    config = OmegaConf.load("config.yml")
     INDEX_PATH = config.INDEX_CSV_PATH
     
     with open(INDEX_PATH, 'r') as f:

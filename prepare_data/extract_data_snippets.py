@@ -25,7 +25,7 @@ class ProcessDataFilter:
         self.ROLLOUT = config.ROLLOUT
         self.PAST_KF = config.PAST_KF
         self.FUTURE_KF = config.FUTURE_KF
-        self.AMASS_DIR = config.AMASS_DIR
+        self.DATASET_DIR = config.DATASET_DIR
         self.MALE_BM_PATH = config.MALE_BM_PATH
         self.FEMALE_BM_PATH = config.FEMALE_BM_PATH
 
@@ -189,7 +189,7 @@ class ProcessDataFilter:
         return tensor_dict
     
     def get_tensor_dict(self, path):
-        data_path = os.path.join(self.AMASS_DIR, path + '.npz')
+        data_path = os.path.join(self.DATASET_DIR, path + '.npz')
         smpl = self.process_smpl(data_path)
         if not smpl:
             return
@@ -208,7 +208,7 @@ class ProcessDataFilter:
         return snippets
 
     def run(self, mid, path, queue=None):
-        data_path = os.path.join(self.DATASET_DIR, path + '.pkl')
+        data_path = os.path.join(self.DATASET_DIR, path + '.npz')
         smpl = self.process_smpl(data_path)
         if not smpl:
             return
@@ -220,7 +220,7 @@ class ProcessDataFilter:
 
 
 if __name__ == '__main__':
-    config = OmegaConf.load("process_data_config.yml")
+    config = OmegaConf.load("config.yml")
     INDEX_PATH = config.INDEX_CSV_PATH
 
     with open(INDEX_PATH, 'r') as f:
