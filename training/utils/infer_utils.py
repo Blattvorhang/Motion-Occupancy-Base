@@ -21,7 +21,7 @@ def get_pose(poses, pos=None, rad=None, bm=None, return_verts=False):
         orient = poses[..., :3]
     else:
         orient = calc_orient_in_global(poses[..., :3], rad)
-    smpl_result = smpl_forward(bm, orient=orient, bpose=poses[..., 3:72], rm_offset=True, return_verts=return_verts)
+    smpl_result = smpl_forward(bm, orient=orient, bpose=poses[..., 3:72], rm_offset=True, return_verts=return_verts, pad_bpose=True)
     joints = smpl_result['joints']
     if pos is not None:
         joints = joints + pos[:, None, :]
