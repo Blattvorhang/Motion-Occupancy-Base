@@ -237,10 +237,11 @@ def draw_batch(draw_dict, save_dir):
             'start': draw_dict['start'][i],
             'end': draw_dict['end'][i],
             'tgt_seq': draw_dict['tgt_seq'][i],
-            'occug': draw_dict['occug'][i],
-            'llb': draw_dict['llb'][i],
-            'unit': draw_dict['unit'],
         }
+        if "occug" in draw_dict:
+            single_draw_dict['occug'] = draw_dict['occug'][i]
+            single_draw_dict['llb'] = draw_dict['llb'][i]
+            single_draw_dict['unit'] = draw_dict['unit']
         if 'ori_v' in draw_dict:
             single_draw_dict['ori_v'] = draw_dict['ori_v'][i]
             single_draw_dict['dv'] = draw_dict['dv'][i]
