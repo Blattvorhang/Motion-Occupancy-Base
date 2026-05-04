@@ -94,10 +94,18 @@ def draw_seq(save_path, draw_dict):
     else:
         ax = create_axes3d(fig, radius=4)
 
-    global update_lines
+    legend_handles = []
+    if 'start' in draw_dict:
+        legend_handles.append(Line2D([0], [0], color='green', linewidth=2, label='Start'))
+    if 'end' in draw_dict:
+        legend_handles.append(Line2D([0], [0], color='red', linewidth=2, label='End / Target'))
+    legend_handles.append(Line2D([0], [0], color='blue', linewidth=2, label='Predicted'))
+    if legend_handles:
+        ax.legend(handles=legend_handles, loc='upper right', fontsize=14)
+
     update_lines = []
     def update(index):
-        global update_lines
+        nonlocal update_lines
         clear_ax(ax, update_lines)
         if 'start' in draw_dict:
             update_lines.extend(plot_single_pose(st_pose, ax, 'green'))
