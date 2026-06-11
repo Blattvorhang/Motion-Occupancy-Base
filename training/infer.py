@@ -20,6 +20,21 @@ from utils.utils import backup_code, backup_config_file, create_logger, get_conf
 from dataset import ELIMBS, LIMBS, MphaseDataset, collate_fn, normalize, denormalize
 import smplx1 as smplx
 
+def build_full_aa_pose(j6d, fdir, device):
+    """
+    Convert 22-joint 6D rotation (canonical frame) to 24-joint axis-angle (SMPL format).
+    j6d: [bs, 22, 6] canonical 6D rotations
+    fdir: [bs, 3] global facing direction
+    Returns: [bs, 72] = global_orient[3] + body_pose[21 joints x 3 = 63] + hand_zeros[6]
+    Joints 22 (left_hand) and 23 (right_hand) are zero-padded since the model does not predict them.
+    """
+    bs = j6d.shape[0]
+    aa = cont6d_to_aa(j6d)                          # [bs, 22, 3] axis-angle in canonical
+    global_orient = calc_orient_in_global(aa[:, 0], fdir_to_rad(fdir))  # [bs, 3]
+    body_pose = aa[:, 1:22].reshape(bs, 63)          # [bs, 63] parent-local, unchanged
+    hand_zeros = torch.zeros(bs, 6, device=device)   # joints 22+23
+    return torch.cat([global_orient, body_pose, hand_zeros], dim=1)
+
 @torch.no_grad()
 def infer(data, dataset, bm, network, config, norm):
     input_mean, input_std, output_mean, output_std = norm
@@ -103,6 +118,8 @@ def infer(data, dataset, bm, network, config, norm):
         crt_pos[:, 2] = height
 
     pose_seq = [get_pose(cont6d_to_aa(crt_j6d).flatten(1), crt_pos, fdir_to_rad(crt_fdir), bm).cpu()]
+    aa_pose_seq = [build_full_aa_pose(crt_j6d, crt_fdir, device)]  # frame 0 (ground truth input)
+    trans_seq = [crt_pos.clone()]
     if USE_TGT:
         rel_pos_seq = [get_abs_limbs(crt_pos, fdir_to_rad(crt_fdir), rel_limb_pos=get_ss_tgt(tgt_limb_abs, crt_pos, crt_fdir)).cpu()]
     if config.TRAIN.get('USE_FIELD', False):
@@ -183,6 +200,8 @@ def infer(data, dataset, bm, network, config, norm):
         if USE_SMPL_UPDATE:
             nxt_jego = get_pose(cont6d_to_aa(nxt_j6d).flatten(1), bm=bm)
         pose_seq.append(abs_pose.clone().cpu())
+        aa_pose_seq.append(build_full_aa_pose(nxt_j6d, nxt_fdir, device))
+        trans_seq.append(nxt_pos.clone())
         if USE_TGT:
             rel_pos_seq.append(get_abs_limbs(crt_pos, fdir_to_rad(crt_fdir), tgt_limbs).cpu())
         past_traj, past_vel = get_ss_past_traj(past_traj, past_vel, crt_pos[:, 2:3], vel, nxt_traj, fdir_vel)
@@ -210,9 +229,22 @@ def infer(data, dataset, bm, network, config, norm):
             rel_limbs.append(rel_pos_seq[i, :closest_ids[i]+1])
         pose_seq = poses
         rel_limbs = rel_pos_seq
+    # Stack AA poses and trans; truncate for early stop if needed.
+    aa_pose_seq = torch.stack(aa_pose_seq, dim=1)  # [bs, frames, 72]
+    trans_seq = torch.stack(trans_seq, dim=1)       # [bs, frames, 3]
+    if config.INFER.get('ANI_EARLY_STOP', False):
+        aa_poses_trunc = []
+        trans_trunc = []
+        for i in range(len(aa_pose_seq)):
+            aa_poses_trunc.append(aa_pose_seq[i, :closest_ids[i]+1])
+            trans_trunc.append(trans_seq[i, :closest_ids[i]+1])
+        aa_pose_seq = aa_poses_trunc
+        trans_seq = trans_trunc
 
     draw_dict = {'seq': pose_seq, 'start': starts} # [bs, 22, 3]
     draw_dict['mid_snip'] = data['mid_snip']
+    draw_dict['aa_poses'] = aa_pose_seq
+    draw_dict['trans'] = trans_seq
     if USE_TGT:
         draw_dict['tgt_seq'] = rel_pos_seq
         draw_dict['end'] = data['jabs_tgt'] # [bs, 22, 3]
@@ -228,6 +260,22 @@ def infer(data, dataset, bm, network, config, norm):
         draw_dict['ori_v'] = ori_v_lst
         draw_dict['dv'] = dv_lst
     return draw_dict
+
+def save_npz(draw_dict, save_dir):
+    """Save generated motions as AMASS-format NPZ files (24-joint SMPL axis-angle)."""
+    os.makedirs(save_dir, exist_ok=True)
+    for i in range(len(draw_dict['aa_poses'])):
+        mid, st_fid, end_fid, idx = draw_dict['mid_snip'][i]
+        poses = draw_dict['aa_poses'][i].cpu().numpy().astype(np.float64)  # [frames, 72]
+        trans = draw_dict['trans'][i].cpu().numpy().astype(np.float64)     # [frames, 3]
+        betas = np.zeros(16, dtype=np.float64)
+        gender = 'male'
+        fps = 10.0
+        save_name = f'gen_no{idx}_{mid}_{st_fid}_{end_fid}.npz'
+        np.savez(os.path.join(save_dir, save_name),
+                 poses=poses, trans=trans, betas=betas,
+                 gender=gender, mocap_framerate=fps)
+        logger.info(f'Saved NPZ: {os.path.join(save_dir, save_name)}')
 
 def draw_batch(draw_dict, save_dir):
     os.makedirs(save_dir, exist_ok=True)
@@ -249,6 +297,9 @@ def draw_batch(draw_dict, save_dir):
         sinp_len = len(single_draw_dict['seq'])
         save_name = f'vox_len{sinp_len}_no{idx}_{mid}_{st_fid}_{end_fid}.mp4'
         draw_seq(os.path.join(save_dir, save_name), single_draw_dict)
+    # Also save generated motions as AMASS-format NPZ files.
+    if 'aa_poses' in draw_dict and 'trans' in draw_dict:
+        save_npz(draw_dict, save_dir)
 
 if __name__ == '__main__':
     config_path = get_config_path()
