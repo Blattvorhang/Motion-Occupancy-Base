@@ -2,6 +2,7 @@ import os
 import pickle
 from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
+from matplotlib.lines import Line2D
 import torch
 import numpy as np
 from dataset import LIMBS
