@@ -36,7 +36,7 @@ def build_full_aa_pose(j6d, fdir, device):
     return torch.cat([global_orient, body_pose, hand_zeros], dim=1)
 
 @torch.no_grad()
-def infer(data, dataset, bm, network, config, norm):
+def infer(data, dataset, bm, network, config, norm, tgt_offset=0.0):
     input_mean, input_std, output_mean, output_std = norm
     if config.TRAIN.get('USE_FIELD', False):
         vel_mean = output_mean[264:267].to(device) # get mean of vel
@@ -82,16 +82,18 @@ def infer(data, dataset, bm, network, config, norm):
             mid = data['mid'].tolist()
             llb = data['llb'].to('cpu')
             occu_g = [dataset.occu_g_dict[i][0].to('cpu') for i in mid]
-    if USE_TGT:
-        tgt_limb_abs = data['jabs_tgt'][:, ELIMBS].to(device, non_blocking=True)
-    else:
-        tgt_limb_abs = None
-
     if USE_EVEL:
         crt_j6d, crt_jego, crt_jevel = get_g_joints_evel(j6d, jego, past_kf)
     else:
         crt_j6d, crt_jego, crt_jevel = get_g_joints(j6d, jego, jabs, fdir, past_kf, nxt_vel=config.TRAIN.USE_NXT_EVEL)
     crt_pos, crt_fdir = get_pos_dir(jabs, fdir, idx=past_kf)
+    if USE_TGT:
+        jabs_tgt = data['jabs_tgt'].to(device, non_blocking=True)
+        jabs_tgt = jabs_tgt + crt_fdir[:, None, :] * tgt_offset
+        tgt_limb_abs = jabs_tgt[:, ELIMBS]
+    else:
+        jabs_tgt = None
+        tgt_limb_abs = None
     past_traj, past_vel = get_g_past_traj(traj, fdir, past_kf, crt_idx=past_kf)
     past_fdir, past_fdir_vel = get_g_past_fdir(fdir, past_kf, crt_idx=past_kf)
     if USE_LIMB_TRAJ:
@@ -126,6 +128,26 @@ def infer(data, dataset, bm, network, config, norm):
         ori_v_lst = []
         dv_lst = []
 
+    # Log network I/O dimensions once before the main loop.
+    logger.info(f'=== Network I/O Summary ===')
+    logger.info(f'INPUT_DIM={config.MODEL.IN_DIM}, OUTPUT_DIM={config.MODEL.OUT_DIM}')
+    logger.info(f'JOINT_INDIM={config.MODEL.JOINT_INDIM}, TRAJ_DIM={config.MODEL.TRAJ_DIM}')
+    logger.info(f'PAST_KF={config.TRAIN.PAST_KF}, FUTURE_KF={config.TRAIN.FUTURE_KF}')
+    logger.info(f'N_JOINTS=22, N_LIMBS=4 (feet: 10,11; wrists: 20,21)')
+    logger.info(f'USE_VOX={config.TRAIN.USE_VOX}, USE_BPS={config.TRAIN.get("USE_BPS", False)}, USE_FIELD={config.TRAIN.get("USE_FIELD", False)}')
+    logger.info(f'USE_TARGET={config.TRAIN.USE_TARGET}, USE_FCONTACT={config.TRAIN.get("USE_FCONTACT", False)}, USE_LIMB_TRAJ={config.TRAIN.USE_LIMB_TRAJ}')
+    logger.info(f'GRID_SIZE={config.TRAIN.GRID_SIZE}, GRID_UNIT={config.TRAIN.GRID_UNIT}')
+    if config.TRAIN.USE_VOX:
+        gs = config.TRAIN.GRID_SIZE
+        logger.info(f'Voxel grid: {gs[0]}x{gs[1]}x{gs[2]} = {gs[0]*gs[1]*gs[2]} cells')
+    logger.info(f'ctrl_dict layout: joints[{config.MODEL.JOINT_INDIM}], traj[{config.MODEL.TRAJ_DIM}]')
+    if config.TRAIN.USE_TARGET:
+        logger.info(f'  + tgt[15] (ELIMBS=(0,10,11,20,21) x 3)')
+    if config.TRAIN.USE_VOX:
+        logger.info(f'  + vox[{gs[0]*gs[1]*gs[2]}] (flattened ego-centric occupancy)')
+    logger.info(f'pred_vec layout [{config.MODEL.OUT_DIM}]: [0:132]=j6d(22x6), [132:198]=jego(22x3), [198:264]=jevel(22x3), [264:267]=nxt_traj, [267:270]=vel, [270:272]=fut_fdir_xy, [272:274]=fdir_vel_cs, [274:286]=nxt_limb_traj(4x3), [286:298]=limb_vel(4x3)')
+    logger.info(f'=============================')
+
     # Main loop.
     for i in range(config.INFER.INFER_LEN):
         # Prepare inputs.
@@ -134,7 +156,7 @@ def infer(data, dataset, bm, network, config, norm):
         in_dict.update({'past_traj': past_traj, 'past_vel': past_vel, 'past_fdir': past_fdir, 'past_fdir_vel': past_fdir_vel})
         if USE_FCONTACT:
             fcontact = get_foot_contact(crt_jego)
-            in_dict['fcontact'] = fcontact
+            in_dict.update({'fcontact': fcontact})
         if USE_LIMB_TRAJ:
             in_dict.update({'past_limb_traj': past_limb_traj, 'past_limb_vel': past_limb_vel})
         if USE_TGT:
@@ -174,10 +196,27 @@ def infer(data, dataset, bm, network, config, norm):
             in_vec[:, :ndims] = normalize(in_vec[:, :ndims], input_mean, input_std)
         if config.TRAIN.SEP_CTRLS:
             ctrl_dict = vec_to_ctrl(config, in_vec)
+            if i == 0:
+                logger.info(f'[Network Input] ctrl_dict keys: {list(ctrl_dict.keys())}')
+                for k, v in ctrl_dict.items():
+                    logger.info(f'  {k}: shape={list(v.shape)}, dtype={v.dtype}')
             if config.TRAIN.get('USE_FIELD', False):
                 vel = past_vel.view(-1, 3)
+                if i == 0:
+                    logger.info(f'  d_vecs: shape={list(d_vecs.shape)}, dtype={d_vecs.dtype}')
+                    logger.info(f'  vel: shape={list(vel.shape)}, dtype={vel.dtype}')
+                    logger.info(f'  vel_norm: mean.shape={list(vel_norm[0].shape)}, std.shape={list(vel_norm[1].shape)}')
                 pred_dict = network(ctrl_dict, d_vecs, vel_norm, vel, return_vel=True)
                 pred_vec, ori_v, dv = pred_dict['pred'], pred_dict['vel'], pred_dict['dv']
+                if i == 0:
+                    logger.info(f'[Network Output] USE_FIELD=True → dict with keys: {list(pred_dict.keys())}')
+                    logger.info(f'  pred: shape={list(pred_vec.shape)}, dtype={pred_vec.dtype}')
+                    logger.info(f'  vel:  shape={list(ori_v.shape)}, dtype={ori_v.dtype}')
+                    logger.info(f'  dv:   shape={list(dv.shape)}, dtype={dv.dtype}')
+                    logger.info(f'  pred layout (OUT_DIM={pred_vec.shape[1]}): '
+                                f'[0:132]=j6d, [132:198]=jego, [198:264]=jevel, '
+                                f'[264:267]=nxt_traj, [267:270]=vel, [270:272]=fut_fdir_xy, '
+                                f'[272:274]=fdir_vel_cs, [274:286]=nxt_limb_traj, [286:298]=limb_vel')
                 ori_v = qrot(fdir_to_quat(crt_fdir), ori_v)
                 dv = qrot(fdir_to_quat(crt_fdir), dv)
                 ori_v[..., 2] = 0.0
@@ -185,7 +224,15 @@ def infer(data, dataset, bm, network, config, norm):
                 ori_v_lst.append(ori_v.cpu())
                 dv_lst.append(dv.cpu())
             else:
+                if i == 0:
+                    logger.info(f'[Network Input] non-field mode, ctrl_dict keys: {list(ctrl_dict.keys())}')
                 pred_vec = network(ctrl_dict)
+                if i == 0:
+                    logger.info(f'[Network Output] USE_FIELD=False → tensor, shape={list(pred_vec.shape)}')
+                    logger.info(f'  pred layout (OUT_DIM={pred_vec.shape[1]}): '
+                                f'[0:132]=j6d, [132:198]=jego, [198:264]=jevel, '
+                                f'[264:267]=nxt_traj, [267:270]=vel, [270:272]=fut_fdir_xy, '
+                                f'[272:274]=fdir_vel_cs, [274:286]=nxt_limb_traj, [286:298]=limb_vel')
         if USE_NORM:
             pred_vec = denormalize(pred_vec, output_mean, output_std)
         nxt_j6d, nxt_jego, nxt_jevel, nxt_traj, vel, fdir_vel = get_from_outputs(pred_vec, future_kf)
@@ -247,7 +294,7 @@ def infer(data, dataset, bm, network, config, norm):
     draw_dict['trans'] = trans_seq
     if USE_TGT:
         draw_dict['tgt_seq'] = rel_pos_seq
-        draw_dict['end'] = data['jabs_tgt'] # [bs, 22, 3]
+        draw_dict['end'] = jabs_tgt  # translated target, [bs, 22, 3]
     if USE_VOX:
         draw_dict['occug'] = [dataset.occu_g_dict[i][0] for i in data['mid_snip'][:, 0].tolist()]
         draw_dict['llb'] = llb
@@ -350,6 +397,12 @@ if __name__ == '__main__':
     bm = smplx.create(config.ASSETS.SMPL_DIR, model_type='smpl', gender='male', num_betas=16).to(device)
 
     norm = (input_mean, input_std, output_mean, output_std)
-    draw_dict = infer(data, dataset, bm, network, config, norm)
     ANI_SAVE_DIR = config.INFER.ANI_SAVE_DIR
-    draw_batch(draw_dict, ANI_SAVE_DIR)
+    
+    # Run inference with different target offsets.
+    for offset in np.arange(0.5, 1.5, 0.5):
+        logger.info(f'Running inference with tgt_offset={offset}m')
+        draw_dict = infer(data, dataset, bm, network, config, norm, tgt_offset=float(offset))
+        offset_dir = os.path.join(ANI_SAVE_DIR, f'offset_{offset}'.replace('.', '_'))
+        draw_batch(draw_dict, offset_dir)
+        logger.info(f'Saved results to {offset_dir}')
