@@ -111,19 +111,39 @@ class MphaseDataset(Dataset):
                 # avg_shape = torch.zeros(3)
                 self.occu_g_dict  = {}
                 self.occu_g_shape = {}
-                pbar = tqdm(total=len(self.mid_list), desc='Loading global occu')
-                for mid in self.mid_list:
-                    file_path = os.path.join(config.ASSETS.OCCUG_DIR, f'{mid:08}.pkl')
-                    occu_g, unit, llb = pickle.load(open(file_path, 'rb'))
-                    occu_g = torch.from_numpy(occu_g).bool() # 1 is wall.
-                    # update max shape
-                    self.occu_g_shape[mid] = torch.tensor(occu_g.shape)
-                    max_shape = torch.max(max_shape, self.occu_g_shape[mid])
-                    # avg_shape += torch.tensor(occu_g.shape)
-                    llb = torch.from_numpy(llb) # 1 is wall.
-                    self.occu_g_dict[mid] = (occu_g, llb)
-                    pbar.update(1)
-                pbar.close()
+
+                # Two modes for loading global occupancy:
+                # 1) OCCU_FILE: a single .pkl under OCCUG_DIR broadcast to all mids
+                #    (e.g. ASSETS.OCCU_FILE=cshape.pkl).
+                # 2) Per-mid files from OCCUG_DIR with optional default.pkl fallback.
+                occu_file = config.ASSETS.get('OCCU_FILE', None)
+                if occu_file:
+                    occu_file = os.path.join(config.ASSETS.OCCUG_DIR, occu_file)
+                if occu_file and os.path.exists(occu_file):
+                    logging.info(f'Loading occupancy from {occu_file} for {len(self.mid_list)} scenes.')
+                    occu_g_np, unit, llb = pickle.load(open(occu_file, 'rb'))
+                    occu_g = torch.from_numpy(occu_g_np).bool()
+                    llb = torch.from_numpy(llb).float()
+                    for mid in self.mid_list:
+                        self.occu_g_shape[mid] = torch.tensor(list(occu_g.shape))
+                        self.occu_g_dict[mid] = (occu_g.clone(), llb.clone())
+                else:
+                    pbar = tqdm(total=len(self.mid_list), desc='Loading global occu')
+                    default_file = os.path.join(config.ASSETS.OCCUG_DIR, 'default.pkl')
+                    for mid in self.mid_list:
+                        file_path = os.path.join(config.ASSETS.OCCUG_DIR, f'{mid:08}.pkl')
+                        if not os.path.exists(file_path) and os.path.exists(default_file):
+                            file_path = default_file
+                        occu_g, unit, llb = pickle.load(open(file_path, 'rb'))
+                        occu_g = torch.from_numpy(occu_g).bool() # 1 is wall.
+                        # update max shape
+                        self.occu_g_shape[mid] = torch.tensor(occu_g.shape)
+                        max_shape = torch.max(max_shape, self.occu_g_shape[mid])
+                        # avg_shape += torch.tensor(occu_g.shape)
+                        llb = torch.from_numpy(llb) # 1 is wall.
+                        self.occu_g_dict[mid] = (occu_g, llb)
+                        pbar.update(1)
+                    pbar.close()
 
                 if config.ASSETS.get('SPLIT_DIR1', False):
                     pbar = tqdm(total=len(mid_list), desc='Loading global occu')

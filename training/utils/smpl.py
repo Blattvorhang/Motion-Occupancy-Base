@@ -9,7 +9,7 @@ def smpl_forward(model, orient=None, bpose=None, poses=None, betas=None, trans=N
     """
     if poses is not None:
         orient = poses[:, :3]
-        bpose = poses[:, 3:72] # smplh needs 22 while smpl needs 24.
+        bpose = poses[:, 3:72]  # 72 = 24 joints * 3; input may have fewer dims (e.g. 22 joints), pad_bpose handles that.
     if bpose is not None:
         bpose = bpose[:, :69]
         if pad_bpose and bpose.shape[1] < 69: # Pad zeros.
