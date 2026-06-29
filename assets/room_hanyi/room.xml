@@ -1,0 +1,78 @@
+<?xml version="1.0"?>
+<mujoco model="humanoid_scene">
+
+  <worldbody>
+
+    <!-- ================= Ground ================= -->
+    <!-- Infinite plane as ground -->
+    <geom name="ground"
+          type="plane"
+          size="5 5 0.1"
+          rgba="0.8 0.9 0.8 1"
+          contype="1"
+          conaffinity="1"/>
+
+    <!-- ================= Walls (static, no joints => infinite mass) ================= -->
+    <body name="walls">
+
+      <!-- Left wall -->
+      <geom name="wall_left"
+            type="box"
+            size="0.1 2 1"
+            pos="-2 0 1"
+            rgba="0.7 0.7 0.7 1"
+            contype="1"
+            conaffinity="1"/>
+
+      <!-- Right wall -->
+      <geom name="wall_right"
+            type="box"
+            size="0.1 2 1"
+            pos="2 0 1"
+            rgba="0.7 0.7 0.7 1"
+            contype="1"
+            conaffinity="1"/>
+
+      <!-- Back wall -->
+      <geom name="wall_back"
+            type="box"
+            size="2 0.1 1"
+            pos="0 -2 1"
+            rgba="0.7 0.7 0.7 1"
+            contype="1"
+            conaffinity="1"/>
+
+      <!-- Front wall split into two parts to create a door opening -->
+
+      <!-- Front wall (left segment) -->
+      <geom name="wall_front_left"
+            type="box"
+            size="0.8 0.1 1"
+            pos="-1.2 2 1"
+            rgba="0.7 0.7 0.7 1"
+            contype="1"
+            conaffinity="1"/>
+
+      <!-- Front wall (right segment) -->
+      <geom name="wall_front_right"
+            type="box"
+            size="0.8 0.1 1"
+            pos="1.2 2 1"
+            rgba="0.7 0.7 0.7 1"
+            contype="1"
+            conaffinity="1"/>
+
+      <!-- Optional top beam above the door -->
+      <!-- <geom name="wall_front_top"
+            type="box"
+            size="0.4 0.1 0.3"
+            pos="0 2 2.3"
+            rgba="0.7 0.7 0.7 1"
+            contype="1"
+            conaffinity="1"/> -->
+
+    </body>
+
+  </worldbody>
+
+</mujoco>
