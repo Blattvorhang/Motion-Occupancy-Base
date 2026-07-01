@@ -3,13 +3,13 @@
 Generate all occupancy .pkl files in one go.
 
 Produces:
-    datasets/occu_g_25/cshape.pkl        — hard-coded C-shaped room
-    datasets/occu_g_25/room_hanyi.pkl    — room_hanyi from MuJoCo XML
-    datasets/occu_g_25/room_zixuan.pkl   — room_zixuan from MuJoCo XML
+    assets/occupancy/cshape.pkl        — hard-coded C-shaped room
+    assets/occupancy/room_hanyi.pkl    — room_hanyi from MuJoCo XML
+    assets/occupancy/room_zixuan.pkl   — room_zixuan from MuJoCo XML
 
 Usage:
     python scripts/generate_all_occupancy.py
-    python scripts/generate_all_occupancy.py --output_dir datasets/occu_g_25
+    python scripts/generate_all_occupancy.py --output_dir assets/occupancy
 """
 
 import argparse
@@ -29,7 +29,7 @@ def main():
         description="Generate all occupancy .pkl files"
     )
     parser.add_argument(
-        "--output_dir", type=str, default="datasets/occu_g_25",
+        "--output_dir", type=str, default="assets/occupancy",
         help="Output directory for .pkl files"
     )
     parser.add_argument(

@@ -6,8 +6,8 @@ and saves it in the standard (occu_g, unit, llb) pickle format used by the
 original per-mid loading pipeline.
 
 Usage:
-    python prepare_data/generate_cshape.py --output datasets/occu_g_25/cshape.pkl
-    python prepare_data/generate_cshape.py --output datasets/occu_g_25/cshape.pkl --grid_size 25 --grid_unit 0.08
+    python prepare_data/generate_cshape.py --output assets/occupancy/cshape.pkl
+    python prepare_data/generate_cshape.py --output assets/occupancy/cshape.pkl --grid_size 25 --grid_unit 0.08
 """
 
 import argparse

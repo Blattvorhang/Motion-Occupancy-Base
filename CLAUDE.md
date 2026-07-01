@@ -130,7 +130,7 @@ These are issues found and fixed during independent reproduction of the paper:
 ### 8. Manual Mode & Closed-Loop Planning (current branch)
 - **File**: `training/infer.py` — `infer_manual()`, `load_smpl_npz()`, `get_tgt_limbs_from_npz()`
 - **`manual` subcommand**: Dataset-free inference. Start/target specified via CLI or YAML `INFER.MANUAL.*`.
-- **Body pose vs position decoupled**: `pose_data/stand.npz` stores posture only (root at origin); `--init_pos`/`--tgt_root` and `--init_fdir`/`--tgt_fdir` control placement.
+- **Body pose vs position decoupled**: `assets/pose/stand.npz` stores posture only (root at origin); `--init_pos`/`--tgt_root` and `--init_fdir`/`--tgt_fdir` control placement.
 - **Internal fast-path fields**: Output `.npz` carries `_j6d`/`_jego`/`_jabs`/`_fdir` (Z-up, per-frame) so `load_smpl_npz()` can reload without `smpl_forward()`, avoiding Y-up↔Z-up conversion loss.
 - **Closed-loop**: External controller picks a frame from step_N.npz, overwrites `trans`/`_jabs` root with real execution result, feeds back as `--init_path` for step_N+1.
 - **`--no_video`**: Skips MP4 rendering for planning speed (NPZ always saved).
@@ -170,11 +170,11 @@ Dataset-free inference with customizable start/target. Body pose from file; posi
 # Single run: walk from origin to (0, 3, 0.9)
 python training/infer.py manual \
     -c checkpoints/dvox_realf_6alpha_all_wodrop/dvox_realf_6alpha_all_wodrop.yaml \
-    --init_path pose_data/stand.npz \
+    --init_path assets/pose/stand.npz \
     --init_pos 0.0,0.0,0.90 \
-    --tgt_path pose_data/stand.npz \
+    --tgt_path assets/pose/stand.npz \
     --tgt_root 0.0,3.0,0.90 \
-    --occu_path datasets/occu_g_25/room_hanyi.pkl \
+    --occu_path assets/occupancy/room_hanyi.pkl \
     --name step_001
 
 # Closed-loop planning (--no_video for speed)
@@ -182,9 +182,9 @@ python training/infer.py manual \
     -c checkpoints/.../config.yaml \
     --init_path step_001.npz \
     --init_pos <new_root> \
-    --tgt_path pose_data/stand.npz \
+    --tgt_path assets/pose/stand.npz \
     --tgt_root <next_target> \
-    --occu_path datasets/occu_g_25/room.pkl \
+    --occu_path assets/occupancy/room.pkl \
     --name step_002 --no_video
 ```
 
@@ -193,7 +193,7 @@ See `python training/infer.py manual --help` for all options. Defaults in `INFER
 
 ### Body Pose vs Position/Orientation
 
-`pose_data/stand.npz` stores **body posture only** — root at `[0,0,0]`, facing +Y (Z-up canonical frame). Position (`--init_pos`, `--tgt_root`) and facing (`--init_fdir`, `--tgt_fdir`) are specified separately via CLI/YAML. Start and target can share the same body pose file.
+`assets/pose/stand.npz` stores **body posture only** — root at `[0,0,0]`, facing +Y (Z-up canonical frame). Position (`--init_pos`, `--tgt_root`) and facing (`--init_fdir`, `--tgt_fdir`) are specified separately via CLI/YAML. Start and target can share the same body pose file.
 
 ### Internal Fields (Fast Path)
 
