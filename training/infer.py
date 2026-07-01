@@ -61,23 +61,26 @@ def _smp_to_project_6d(j6d_smpl):
 
 
 @torch.no_grad()
-def load_smpl_npz(npz_path, init_pos, init_fdir, bm, device):
+def load_smpl_npz(npz_path, init_pos, init_fdir, bm, device, frame=0):
     """Load SMPL .npz and convert to project internal format.
     If .npz contains _j6d/_jego/_jabs/_fdir fields, uses them directly (fast path).
     Otherwise falls back to SMPL forward (slow path, handles external SMPL .npz).
+
+    Args:
+        frame: which frame index to load (0-indexed). Only used for multi-frame arrays.
     """
     data = np.load(npz_path, allow_pickle=True)
     betas_npz = torch.from_numpy(data['betas']).float().to(device).unsqueeze(0)  # [1, 16]
 
     # Fast path: project-internal fields available (from our own save_npz output)
     if '_j6d' in data and '_jego' in data and '_jabs' in data and '_fdir' in data:
-        # Take first frame if multi-frame arrays are stored
         _j6d = torch.from_numpy(data['_j6d']).float().to(device)
         _jego = torch.from_numpy(data['_jego']).float().to(device)
         _jabs = torch.from_numpy(data['_jabs']).float().to(device)
         _fdir = torch.from_numpy(data['_fdir']).float().to(device)
-        if _j6d.dim() == 3:  # [frames, 22, 6] → [22, 6]
-            _j6d, _jego, _jabs, _fdir = _j6d[0], _jego[0], _jabs[0], _fdir[0]
+        if _j6d.dim() == 3:  # [frames, 22, 6] → extract specified frame
+            frame = min(frame, _j6d.shape[0] - 1)
+            _j6d, _jego, _jabs, _fdir = _j6d[frame], _jego[frame], _jabs[frame], _fdir[frame]
         j6d = _j6d.unsqueeze(0)        # [1, 22, 6]
         jego_npz = _jego.unsqueeze(0)  # [1, 22, 3]
         jabs_npz = _jabs.unsqueeze(0)  # [1, 22, 3]
@@ -98,7 +101,9 @@ def load_smpl_npz(npz_path, init_pos, init_fdir, bm, device):
     poses = torch.from_numpy(data['poses']).float().to(device)
     trans_npz = torch.from_numpy(data['trans']).float().to(device)
 
-    aa_72 = poses[0:1]
+    frame = min(frame, poses.shape[0] - 1)
+    aa_72 = poses[frame:frame + 1]
+    trans_frame = trans_npz[frame:frame + 1]
     aa_24 = aa_72.reshape(1, 24, 3)
     quat_24 = aa_to_quat(aa_24)
     j6d_24 = quat_to_6d(quat_24)
@@ -107,7 +112,7 @@ def load_smpl_npz(npz_path, init_pos, init_fdir, bm, device):
     body_pose_66 = aa_72[:, 3:69]
     smpl_out = smpl_forward(bm, orient=aa_72[:, :3], bpose=body_pose_66,
                            betas=betas_npz, rm_offset=True, pad_bpose=True)
-    jabs_smpl = smpl_out['joints'] + trans_npz[0:1]
+    jabs_smpl = smpl_out['joints'] + trans_frame
     jabs = _smp_to_project_positions(jabs_smpl)
     j6d = _smp_to_project_6d(j6d)
 
@@ -186,7 +191,8 @@ def get_tgt_limbs_from_npz(npz_path, tgt_root, tgt_fdir, bm, device):
 
 @torch.no_grad()
 def infer_manual(bm, network, config, norm, init_pos, init_fdir, init_j6d, init_jego,
-                 tgt_limb_abs, occu_g, llb, unit, infer_len, device, betas=None):
+                 tgt_limb_abs, occu_g, llb, unit, infer_len, device, betas=None,
+                 history=None, save_history_frame=None):
     """Manual-mode inference with externally specified start and target.
 
     Zero dependency on MphaseDataset. All inputs passed explicitly.
@@ -244,7 +250,6 @@ def infer_manual(bm, network, config, norm, init_pos, init_fdir, init_j6d, init_
     # Initialize state
     crt_j6d = init_j6d.to(device)
     crt_jego = init_jego.to(device)
-    crt_jevel = torch.zeros(bs, 22, 3, device=device)
 
     crt_pos = init_pos.to(device).view(bs, 3)
     crt_fdir = init_fdir.to(device).view(bs, 3)
@@ -252,19 +257,35 @@ def infer_manual(bm, network, config, norm, init_pos, init_fdir, init_j6d, init_
     height = crt_jego[:, 0, 2:3]
     limb_height = crt_jego[:, LIMBS, 2]
 
-    past_traj = torch.zeros(bs, past_kf, 3, device=device)
-    past_traj[..., 2] = height[:, None]
-    past_vel = torch.zeros(bs, past_kf, 3, device=device)
-    past_fdir = torch.zeros(bs, past_kf, 3, device=device)
-    past_fdir[..., 1] = 1.0
-    past_fdir_vel = torch.zeros(bs, past_kf, 3, device=device)
-    past_fdir_vel[..., 0] = 1.0
     tgt_limb_abs = tgt_limb_abs.to(device).view(bs, 5, 3)
 
-    if USE_LIMB_TRAJ:
-        past_limb_traj = torch.zeros(bs, past_kf + 1, 4, 3, device=device)
-        past_limb_traj[..., 2] = limb_height
-        past_limb_vel = torch.zeros(bs, past_kf, 4, 3, device=device)
+    if history is not None:
+        # Convert numpy arrays to tensors (history may be loaded from .npy)
+        for k in list(history.keys()):
+            v = history[k]
+            if not torch.is_tensor(v):
+                history[k] = torch.from_numpy(v).float()
+        crt_jevel      = history['crt_jevel'].to(device)
+        past_traj      = history['past_traj'].to(device)
+        past_vel       = history['past_vel'].to(device)
+        past_fdir      = history['past_fdir'].to(device)
+        past_fdir_vel  = history['past_fdir_vel'].to(device)
+        if USE_LIMB_TRAJ:
+            past_limb_traj = history['past_limb_traj'].to(device)
+            past_limb_vel  = history['past_limb_vel'].to(device)
+    else:
+        crt_jevel = torch.zeros(bs, 22, 3, device=device)
+        past_traj = torch.zeros(bs, past_kf, 3, device=device)
+        past_traj[..., 2] = height[:, None]
+        past_vel = torch.zeros(bs, past_kf, 3, device=device)
+        past_fdir = torch.zeros(bs, past_kf, 3, device=device)
+        past_fdir[..., 1] = 1.0
+        past_fdir_vel = torch.zeros(bs, past_kf, 3, device=device)
+        past_fdir_vel[..., 0] = 1.0
+        if USE_LIMB_TRAJ:
+            past_limb_traj = torch.zeros(bs, past_kf + 1, 4, 3, device=device)
+            past_limb_traj[..., 2] = limb_height
+            past_limb_vel = torch.zeros(bs, past_kf, 4, 3, device=device)
 
     pose_seq = [get_pose(cont6d_to_aa(crt_j6d).flatten(1), crt_pos, fdir_to_rad(crt_fdir), bm).cpu()]
     aa_pose_seq = [build_full_aa_pose(crt_j6d, crt_fdir, device)]
@@ -281,6 +302,7 @@ def infer_manual(bm, network, config, norm, init_pos, init_fdir, init_j6d, init_
 
     logger.info(f'>>> INFER manual | bs={bs}, len={infer_len}, vox={USE_VOX}, field={USE_FIELD}, tgt={USE_TGT}')
 
+    draw_dict = {}
     for i in range(infer_len):
         in_dict = {'j6d': crt_j6d, 'jego': crt_jego, 'jevel': crt_jevel}
         in_dict.update({'crt_pos': crt_pos})
@@ -359,6 +381,21 @@ def infer_manual(bm, network, config, norm, init_pos, init_fdir, init_j6d, init_
         crt_pos = nxt_pos
         crt_fdir = nxt_fdir
 
+        # Snapshot autoregressive state at the requested frame for closed-loop
+        if save_history_frame is not None and i == save_history_frame:
+            _snap = {
+                'crt_jevel':      crt_jevel.clone().cpu(),
+                'past_traj':      past_traj.clone().cpu(),
+                'past_vel':       past_vel.clone().cpu(),
+                'past_fdir':      past_fdir.clone().cpu(),
+                'past_fdir_vel':  past_fdir_vel.clone().cpu(),
+            }
+            if USE_LIMB_TRAJ:
+                _snap['past_limb_traj'] = past_limb_traj.clone().cpu()
+                _snap['past_limb_vel']  = past_limb_vel.clone().cpu()
+            draw_dict['_history'] = _snap
+            draw_dict['_final_fdir'] = crt_fdir.clone().cpu()
+
     pose_seq = torch.stack(pose_seq, dim=1)  # [1, frames, 22, 3]
     starts = pose_seq[:, 0]
     rel_pos_seq = torch.stack(rel_pos_seq, dim=1)  # [1, frames, 5, 3]
@@ -366,7 +403,8 @@ def infer_manual(bm, network, config, norm, init_pos, init_fdir, init_j6d, init_
     trans_seq = torch.stack(trans_seq, dim=1)  # [1, frames, 3]
 
     # Build draw_dict
-    draw_dict = {'seq': pose_seq, 'start': starts}
+    draw_dict['seq'] = pose_seq
+    draw_dict['start'] = starts
     draw_dict['mid_snip'] = torch.tensor([[0, 0, 0, 0]])  # placeholder
     draw_dict['aa_poses'] = aa_pose_seq
     draw_dict['trans'] = trans_seq
@@ -390,6 +428,21 @@ def infer_manual(bm, network, config, norm, init_pos, init_fdir, init_j6d, init_
         dv_lst = torch.stack(dv_lst, dim=1)
         draw_dict['ori_v'] = ori_v_lst
         draw_dict['dv'] = dv_lst
+
+    # Return final autoregressive state for closed-loop history passing
+    draw_dict['_final_fdir'] = crt_fdir.cpu()  # [1, 3]
+    hist = {
+        'crt_jevel':      crt_jevel.cpu(),
+        'past_traj':      past_traj.cpu(),
+        'past_vel':       past_vel.cpu(),
+        'past_fdir':      past_fdir.cpu(),
+        'past_fdir_vel':  past_fdir_vel.cpu(),
+    }
+    if USE_LIMB_TRAJ:
+        hist['past_limb_traj'] = past_limb_traj.cpu()
+        hist['past_limb_vel']  = past_limb_vel.cpu()
+    draw_dict['_history'] = hist
+
     return draw_dict
 
 

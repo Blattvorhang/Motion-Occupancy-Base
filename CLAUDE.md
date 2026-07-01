@@ -127,11 +127,14 @@ These are issues found and fixed during independent reproduction of the paper:
   - `prepare_data/generate_cshape.py`: Standalone C-shaped room `.pkl` generator
   - `scripts/generate_all_occupancy.py`: Batch script for all room XML files
 
-### 8. Target Offset Inference (`b7e5f0c`)
-- **File**: `training/infer.py` — `infer()`
-- **`tgt_offset` parameter**: Translates the target pose along the character's facing direction by `tgt_offset` meters. The target translation is applied in global space: `jabs_tgt = jabs_tgt + crt_fdir * tgt_offset`.
-- **Sweep**: The main block runs inference across `np.arange(0.5, 1.5, 0.5)` offsets, saving each to a separate subdirectory (`offset_0_5/`, `offset_1_0/`).
-- **Debug logging**: First iteration of the autoregressive loop prints a complete summary of network I/O dimensions, ctrl_dict keys/shapes, and output tensor layout — critical for verifying data flow correctness when debugging.
+### 8. Manual Mode & Closed-Loop Planning (current branch)
+- **File**: `training/infer.py` — `infer_manual()`, `load_smpl_npz()`, `get_tgt_limbs_from_npz()`
+- **`manual` subcommand**: Dataset-free inference. Start/target specified via CLI or YAML `INFER.MANUAL.*`.
+- **Body pose vs position decoupled**: `pose_data/stand.npz` stores posture only (root at origin); `--init_pos`/`--tgt_root` and `--init_fdir`/`--tgt_fdir` control placement.
+- **Internal fast-path fields**: Output `.npz` carries `_j6d`/`_jego`/`_jabs`/`_fdir` (Z-up, per-frame) so `load_smpl_npz()` can reload without `smpl_forward()`, avoiding Y-up↔Z-up conversion loss.
+- **Closed-loop**: External controller picks a frame from step_N.npz, overwrites `trans`/`_jabs` root with real execution result, feeds back as `--init_path` for step_N+1.
+- **`--no_video`**: Skips MP4 rendering for planning speed (NPZ always saved).
+- **Removed `tgt_offset` sweep**: Redundant with manual target specification.
 
 ### 9. Condensed Environment YAML (`afd7d84`)
 - **File**: `environment.yaml` (repo root)
@@ -187,3 +190,43 @@ python training/infer.py manual \
 
 Output: `{output_dir}/{name}.npz` (SMPL + internal fast-path fields) + `.mp4`.
 See `python training/infer.py manual --help` for all options. Defaults in `INFER.MANUAL.*`.
+
+### Body Pose vs Position/Orientation
+
+`pose_data/stand.npz` stores **body posture only** — root at `[0,0,0]`, facing +Y (Z-up canonical frame). Position (`--init_pos`, `--tgt_root`) and facing (`--init_fdir`, `--tgt_fdir`) are specified separately via CLI/YAML. Start and target can share the same body pose file.
+
+### Internal Fields (Fast Path)
+
+Output `.npz` files carry extra fields alongside standard SMPL `poses`/`trans`:
+
+| Field | Shape | Content |
+|-------|-------|---------|
+| `_j6d` | `[frames, 22, 6]` | Canonical 6D rotations (Z-up, +Y forward) |
+| `_jego` | `[frames, 22, 3]` | Canonical joint positions (root-relative) |
+| `_jabs` | `[frames, 22, 3]` | Global joint positions (Z-up) |
+| `_fdir` | `[frames, 3]` | Forward direction vector |
+
+When `load_smpl_npz()` detects these fields, it takes the **fast path**: directly reads Z-up coordinates and skips `smpl_forward()` entirely. This avoids a lossy Y-up↔Z-up roundtrip through the SMPL model (SMPL's native `v_template` is Y-up, but the entire project pipeline uses Z-up).
+
+The slow path (external SMPL `.npz` without internal fields) exists for compatibility but has known limb-position inaccuracies due to the coordinate conversion.
+
+### Closed-Loop Planning
+
+```
+infer.py → step_N.npz (all frames, with internal fields)
+              ↓
+external controller: np.load() → pick frame k → modify root/trans → np.savez()
+              ↓
+infer.py ← --init_path step_N_modified.npz
+```
+
+The controller only needs to update `trans` (and optionally `_jabs[0]`) with the real execution result. `_j6d` (body posture) passes through unchanged. The controller's frame rate and sampling strategy are irrelevant — it just picks one frame and modifies its root position/orientation.
+
+### Coordinate System
+
+The entire project uses **Z-up, +Y-forward** in canonical space:
+- Z = height (feet near z≈0, root at z≈0.9m for standing)
+- Y = forward (fdir = `[0, 1, 0]`)
+- X = right
+
+SMPL's native model (`v_template`) is **Y-up**. The original data pipeline (`generate_data.py`) produces Z-up output via `smpl_fk(template_joints)` + canonicalization, and never runs `smpl_forward()` on the SMPL model during data generation. The manual mode fast path avoids this conversion by storing Z-up coordinates directly.
